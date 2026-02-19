@@ -2,9 +2,160 @@
 
 import random
 import math
+from collections import defaultdict
 from core.physics import Vector2
 from core.resource import Plant, ResourceNode
 from core.building import Building, BuildingType
+
+
+class SpatialGrid:
+    """
+    Spatial hashing grid для быстрого поиска объектов по позиции.
+    Делит мир на ячейки (cells) и хранит объекты в клеточной сетке.
+    Поиск в радиусе от O(N) → O(1) в среднем случае.
+    """
+    
+    def __init__(self, world_width: float, world_height: float, cell_size: float = 100.0):
+        self.world_width = world_width
+        self.world_height = world_height
+        self.cell_size = cell_size
+        
+        # Размер сетки в ячейках
+        self.grid_width = int(math.ceil(world_width / cell_size))
+        self.grid_height = int(math.ceil(world_height / cell_size))
+        
+        # Сетка: (grid_x, grid_y) → [объекты]
+        self.plants_grid = defaultdict(list)
+        self.entities_grid = defaultdict(list)
+        
+        # ОПТИМИЗАЦИЯ: Lazy updates - кешируем старые позиции для batch обновления
+        self.entity_cell_cache = {}  # entity.id → old_cell
+        self.entities_to_update = set()  # entity.id список для обновления
+    
+    def _get_cell(self, pos: Vector2) -> tuple:
+        """Получить координаты ячейки для позиции"""
+        gx = int(pos.x // self.cell_size)
+        gy = int(pos.y // self.cell_size)
+        # Ограничиваем границами сетки
+        gx = max(0, min(gx, self.grid_width - 1))
+        gy = max(0, min(gy, self.grid_height - 1))
+        return (gx, gy)
+    
+    def _get_nearby_cells(self, pos: Vector2, radius: float) -> list:
+        """Получить все ячейки в радиусе от позиции"""
+        cells = []
+        cell_radius = int(math.ceil(radius / self.cell_size))
+        gx, gy = self._get_cell(pos)
+        
+        for dx in range(-cell_radius, cell_radius + 1):
+            for dy in range(-cell_radius, cell_radius + 1):
+                nx, ny = gx + dx, gy + dy
+                if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height:
+                    cells.append((nx, ny))
+        return cells
+    
+    def add_plant(self, plant):
+        """Добавить растение в сетку"""
+        cell = self._get_cell(plant.pos)
+        self.plants_grid[cell].append(plant)
+    
+    def add_entity(self, entity):
+        """Добавить сущность в сетку"""
+        cell = self._get_cell(entity.pos)
+        self.entities_grid[cell].append(entity)
+        self.entity_cell_cache[entity.id] = cell
+    
+    def mark_entity_moved(self, entity):
+        """Отметить сущность что она движется (для lazy update)"""
+        self.entities_to_update.add(entity.id)
+    
+    def update_entity_positions(self, entities: list):
+        """
+        Обновить позиции только тех сущностей которые движутся (lazy update).
+        Вместо пересчета всей сетки, обновляем только отмеченные.
+        """
+        for entity in entities:
+            if entity.id not in self.entities_to_update:
+                continue
+            if not entity.is_alive:
+                continue
+            
+            new_cell = self._get_cell(entity.pos)
+            old_cell = self.entity_cell_cache.get(entity.id)
+            
+            if old_cell != new_cell:
+                # Сущность переместилась в другую ячейку
+                if old_cell and entity in self.entities_grid[old_cell]:
+                    self.entities_grid[old_cell].remove(entity)
+                self.entities_grid[new_cell].append(entity)
+                self.entity_cell_cache[entity.id] = new_cell
+        
+        # Очищаем список на обновление для следующего frame
+        self.entities_to_update.clear()
+    
+    def clear(self):
+        """Очистить сетку и пересчитать с нуля"""
+        self.plants_grid.clear()
+        self.entities_grid.clear()
+        self.entity_cell_cache.clear()
+        self.entities_to_update.clear()
+    
+    def rebuild(self, plants: list, entities: list):
+        """Пересчитать сетку с нуля (вызывать после больших изменений)"""
+        self.clear()
+        for plant in plants:
+            if plant.is_alive:
+                self.add_plant(plant)
+        for entity in entities:
+            if entity.is_alive:
+                self.add_entity(entity)
+    
+    def rebuild_plants(self, plants: list):
+        """Пересчитать только plants grid (они не двигаются часто)"""
+        self.plants_grid.clear()
+        for plant in plants:
+            if plant.is_alive:
+                self.add_plant(plant)
+    
+    def get_plants_in_radius(self, pos: Vector2, radius: float) -> list:
+        """Получить растения в радиусе (отсортировано по расстоянию)"""
+        nearby_cells = self._get_nearby_cells(pos, radius)
+        nearby = []
+        radius_sq = radius * radius
+        
+        for cell in nearby_cells:
+            for plant in self.plants_grid[cell]:
+                if not plant.is_alive:
+                    continue
+                dx = plant.pos.x - pos.x
+                dy = plant.pos.y - pos.y
+                dist_sq = dx * dx + dy * dy
+                if dist_sq <= radius_sq:
+                    dist = dist_sq ** 0.5
+                    nearby.append((plant, dist))
+        
+        return sorted(nearby, key=lambda x: x[1])
+    
+    def get_entities_in_radius(self, pos: Vector2, radius: float, exclude_id=None) -> list:
+        """Получить сущности в радиусе (отсортировано по расстоянию)"""
+        nearby_cells = self._get_nearby_cells(pos, radius)
+        nearby = []
+        radius_sq = radius * radius
+        
+        for cell in nearby_cells:
+            for entity in self.entities_grid[cell]:
+                if exclude_id and entity.id == exclude_id:
+                    continue
+                if not entity.is_alive:
+                    continue
+                dx = entity.pos.x - pos.x
+                dy = entity.pos.y - pos.y
+                dist_sq = dx * dx + dy * dy
+                if dist_sq <= radius_sq:
+                    dist = dist_sq ** 0.5
+                    nearby.append((entity, dist))
+        
+        return sorted(nearby, key=lambda x: x[1])
 
 
 class World:
@@ -22,6 +173,10 @@ class World:
         self.resources = []  # статические ресурсы (деревья, камни, руда)
         self.buildings = [] # player built structures
         self.smart_tribes = {}  # tribe_id -> [SmartCreature, ...]
+        
+        # Spatial hashing grid для быстрого поиска объектов
+        self.spatial_grid = SpatialGrid(width, height, cell_size=100.0)
+        self.grid_rebuild_counter = 0  # Пересчитываем grid каждые N кадров
         
         self.time = 0.0  # общее прошедшее время симуляции
         self.frame = 0   # номер кадра
@@ -253,6 +408,9 @@ class World:
                 dead_entities.append(entity)
                 continue
             
+            # ОПТИМИЗАЦИЯ: Отмечаем что entity движется (для lazy grid update)
+            self.spatial_grid.mark_entity_moved(entity)
+            
             # Поведение (ИИ решает что делать)
             entity.behavior(dt, self)
             
@@ -267,8 +425,32 @@ class World:
             if entity in self.entities:
                 self.entities.remove(entity)
         
-        # 3. Обновляем статистику
+        # 3. ОПТИМИЗАЦИЯ: Обновляем spatial grid используя lazy update вместо полного rebuild
+        # Обновляем позиции только тех entities которые реально движутся
+        self.spatial_grid.update_entity_positions(self.entities)
+        
+        # Пересчитываем plants grid (они не двигаются, но могут удаляться)
+        if self.frame % 5 == 0:  # Пересчитываем plants grid каждые 5 фреймов
+            self.spatial_grid.rebuild_plants(self.plants)
+        
+        # 4. Обновляем статистику
         self.update_stats()
+    
+    def get_plants_in_radius(self, pos, radius: float):
+        """
+        Получить растения в радиусе (использует spatial grid для быстрого поиска).
+        Сортировано по расстоянию (ближайшие в начале).
+        O(1) вместо O(N) с spatial hashing!
+        """
+        return self.spatial_grid.get_plants_in_radius(pos, radius)
+    
+    def get_entities_in_radius(self, pos, radius: float, exclude_id=None):
+        """
+        Получить сущности в радиусе (использует spatial grid для быстрого поиска).
+        Сортировано по расстоянию.
+        O(1) вместо O(N) с spatial hashing!
+        """
+        return self.spatial_grid.get_entities_in_radius(pos, radius, exclude_id=exclude_id)
     
     def update_stats(self):
         """Обновить статистику (оптимизированная версия)"""

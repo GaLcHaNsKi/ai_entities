@@ -140,6 +140,37 @@ class RLBrain(Brain):
         if self.model is None or entity is None:
             return {'action': 'idle', 'target': None, 'speed': 0}
         
+        from core.physics import Vector2
+        
+        # PANIC MODE: Если рядом 2+ хищника на близком расстоянии - немедленное бегство
+        # OPTIMIZED: Lazy evaluation - считаем угрозы только если нужно
+        predators = sensor_data.get('nearby_predators', [])
+        smarts = sensor_data.get('nearby_smarts', [])
+        
+        # Quick check: есть ли вообще угрозы рядом
+        close_threat_count = sum(1 for p in predators if p['distance'] < 50.0)
+        close_threat_count += sum(1 for s in smarts if s['distance'] < 50.0)
+        
+        if close_threat_count >= 2 and entity.energy > 10:
+            # Множественная угроза - убегаем в противоположную сторону
+            avg_threat_dir = None
+            threat_count = 0
+            for threat in list(predators) + list(smarts):
+                if threat['distance'] < 50.0 and threat_count < 3:
+                    if avg_threat_dir is None:
+                        avg_threat_dir = threat['direction']
+                    else:
+                        avg_threat_dir = avg_threat_dir + threat['direction']
+                    threat_count += 1
+            
+            if avg_threat_dir and avg_threat_dir.magnitude() > 0:
+                panic_direction = (avg_threat_dir.normalize() * -1)
+                return {
+                    'action': 'move',
+                    'target': panic_direction,
+                    'speed': entity.max_speed,
+                }
+        
         # Для травоядных: короткая память действий (0.1–0.3с),
         # чтобы не дёргаться каждый тик и удерживать поведение.
         # Бегство при угрозе всё равно имеет приоритет выше на уровне Herbivore.behavior.
@@ -184,20 +215,22 @@ class RLBrain(Brain):
         elif self.agent_type == "herbivore":
             # Fallback-направление для травоядных, когда policy даёт почти нулевой вектор:
             # 1) убегать от ближайшей угрозы, 2) идти к растению, 3) продолжать текущий курс.
-            predator_like = sensor_data.get('nearby_predators', []) + sensor_data.get('nearby_smarts', [])
+            # OPTIMIZED: Sensor data уже отсортирован по расстоянию - берём первый элемент
+            predators = sensor_data.get('nearby_predators', [])
+            smarts = sensor_data.get('nearby_smarts', [])
             plants = sensor_data.get('nearby_plants', [])
 
-            if predator_like and entity.energy > 15:
-                threat = min(predator_like, key=lambda p: p['distance'])
+            # Первый элемент = ближайший (так как уже отсортирован)
+            threat = predators[0] if predators else (smarts[0] if smarts else None)
+            if threat and entity.energy > 15:
                 direction = Vector2(-threat['direction'].x, -threat['direction'].y).normalize()
             elif plants:
-                food = min(plants, key=lambda p: p['distance'])
+                food = plants[0]  # Ближайшее растение
                 direction = food['direction'].normalize() if food['direction'].magnitude() > 0 else Vector2(1, 0)
             elif entity.velocity.magnitude() > 0.3:
                 direction = entity.velocity.normalize()
             else:
-                # Вместо случайного вращения (которое выглядит как баг), просто стоим или продолжаем (0,0)
-                # Это заставит агента остановиться, если сеть не уверена
+                # Вместо случайного вращения (которое выглядит как баг), просто стоим
                 direction = Vector2(0, 0)
 
         # Пост-обработка движения травоядных для стабильности в inference:

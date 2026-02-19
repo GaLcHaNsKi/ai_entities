@@ -50,7 +50,8 @@ class Herbivore(Animal):
         sensors = self.get_sensor_data(world)
         predators = sensors['nearby_predators'] + sensors.get('nearby_smarts', [])
         plants = sensors['nearby_plants']
-        closest_predator = min(predators, key=lambda p: p['distance']) if predators else None
+        # OPTIMIZED: Sensor data уже отсортирован - берём первый элемент вместо min()
+        closest_predator = predators[0] if predators else None
 
         self.post_flee_no_eat_timer = max(0.0, self.post_flee_no_eat_timer - dt)
 
@@ -85,7 +86,8 @@ class Herbivore(Animal):
         
         # 2. ПОИСК ЕДЫ (приоритет 2)
         if plants:
-            closest_plant = min(plants, key=lambda p: p['distance'])
+            # OPTIMIZED: Берём первый элемент (уже отсортирован по расстоянию)
+            closest_plant = plants[0]
             if closest_plant['distance'] < 12:
                 plant_obj = None
                 for p in world.plants:

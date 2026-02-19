@@ -101,7 +101,8 @@ class Predator(Animal):
         
         # 1. ПОИСК ДОБЫЧИ (травоядные) - приоритет 1
         if preys:
-            closest_prey = min(preys, key=lambda h: h['distance'])
+            # OPTIMIZED: Sensor data уже отсортирован по расстоянию
+            closest_prey = preys[0]
             if closest_prey['distance'] < self.attack_range:
                 if self.attack_timer <= 0:
                     for entity in world.entities:
@@ -122,9 +123,10 @@ class Predator(Animal):
         
         # 2. КОНКУРЕНЦИЯ С ДРУГИМИ ХИЩНИКАМИ
         if predators:
+            # OPTIMIZED: Фильтруем и берём первого (система уже отсортирована сортировкой)
             stronger_predators = [p for p in predators if p['energy'] > self.energy * 1.2]
             if stronger_predators:
-                closest_threat = min(stronger_predators, key=lambda p: p['distance'])
+                closest_threat = stronger_predators[0]  # Уже отсортирован
                 self.flee_from(self.pos + closest_threat['direction'] * 100, speed=75)
                 self.state = "fleeing"
                 self.current_prey = None

@@ -94,14 +94,17 @@ class Entity(ABC):
     
     def get_sensor_data(self, world) -> dict:
         """
-        Получить информацию об окружении для ИИ
+        Получить информацию об окружении для ИИ.
+        OPTIMIZED: Использует spatial search (get_plants_in_radius, get_entities_in_radius)
+        вместо O(N) полного перебора.
         
         Возвращает:
         {
             'self_energy': уровень энергии (0-1),
-            'nearby_plants': список близких растений,
+            'nearby_plants': список близких растений (отсортирован по расстоянию),
             'nearby_herbivores': список близких травоядных,
             'nearby_predators': список близких хищников,
+            'nearby_smarts': список близких смарт существ,
         }
         """
         data = {
@@ -117,10 +120,11 @@ class Entity(ABC):
         if world is None:
             return data
         
-        # Ищем объекты в радиусе видимости
-        for plant in world.plants:
-            dist = self.pos.distance_to(plant.pos)
-            if dist < self.vision_range and plant.is_alive:
+        # OPTIMIZED: Используем spatial search вместо O(N) перебора
+        # get_plants_in_radius уже отсортирован по расстоянию
+        plants_nearby = world.get_plants_in_radius(self.pos, self.vision_range)
+        for plant, dist in plants_nearby:
+            if plant.is_alive:
                 direction = (plant.pos - self.pos).normalize()
                 data['nearby_plants'].append({
                     'distance': dist,
@@ -129,38 +133,27 @@ class Entity(ABC):
                     'id': plant.id
                 })
         
-        for entity in world.entities:
-            if entity.id == self.id:
+        # OPTIMIZED: Spatial search для сущностей
+        entities_nearby = world.get_entities_in_radius(self.pos, self.vision_range, exclude_id=self.id)
+        for entity, dist in entities_nearby:
+            if not entity.is_alive:
                 continue
             
-            dist = self.pos.distance_to(entity.pos)
-            if dist < self.vision_range:
-                direction = (entity.pos - self.pos).normalize()
-                
-                if entity.entity_type == "herbivore":
-                    data['nearby_herbivores'].append({
-                        'distance': dist,
-                        'direction': direction,
-                        'velocity': entity.velocity,
-                        'energy': entity.energy,
-                        'id': entity.id
-                    })
-                elif entity.entity_type == "predator":
-                    data['nearby_predators'].append({
-                        'distance': dist,
-                        'direction': direction,
-                        'velocity': entity.velocity,
-                        'energy': entity.energy,
-                        'id': entity.id
-                    })
-                elif entity.entity_type == "smart":
-                    data['nearby_smarts'].append({
-                        'distance': dist,
-                        'direction': direction,
-                        'velocity': entity.velocity,
-                        'energy': entity.energy,
-                        'id': entity.id
-                    })
+            direction = (entity.pos - self.pos).normalize()
+            entity_data = {
+                'distance': dist,
+                'direction': direction,
+                'velocity': entity.velocity,
+                'energy': entity.energy,
+                'id': entity.id
+            }
+            
+            if entity.entity_type == "herbivore":
+                data['nearby_herbivores'].append(entity_data)
+            elif entity.entity_type == "predator":
+                data['nearby_predators'].append(entity_data)
+            elif entity.entity_type == "smart":
+                data['nearby_smarts'].append(entity_data)
         
         return data
     

@@ -103,15 +103,27 @@ class SmartCreature(Animal):
         super().take_damage(final_damage)
 
     def _nearby_tribe_members(self, world, radius: float):
-        members = []
-        tribe_list = world.smart_tribes.get(self.tribe_id, []) if hasattr(world, 'smart_tribes') else []
-        for entity in tribe_list:
-            if entity is self or not entity.is_alive:
-                continue
-            dist = (entity.pos - self.pos).magnitude()
-            if dist <= radius:
-                members.append((entity, dist))
-        return members
+        """
+        Найти соплеменников в радиусе.
+        OPTIMIZED: Использует spatial search вместо полного перебора племени.
+        """
+        if not hasattr(world, 'smart_tribes'):
+            return []
+        
+        tribe_list = world.smart_tribes.get(self.tribe_id, [])
+        if not tribe_list:
+            return []
+        
+        # OPTIMIZED: Используем spatial search вместо O(T) перебора
+        members = world.get_entities_in_radius(self.pos, radius, exclude_id=self.id)
+        
+        # Фильтруем - только живые соплеменники
+        result = []
+        for entity, dist in members:
+            if entity.entity_type == "smart" and entity.tribe_id == self.tribe_id:
+                result.append((entity, dist))
+        
+        return result
         
     def _share_resources_with_tribe(self, world):
         """Делимся едой и ресурсами с соплеменниками"""
@@ -151,23 +163,17 @@ class SmartCreature(Animal):
                 return
             
             # 3. If no meat, try to eat nearby plants (omnivore behavior)
+            # OPTIMIZED: use spatial search instead of O(N) iteration
             if world is not None:
-                best_plant = None
-                best_dist = float('inf')
-                for plant in world.plants:
-                    if not plant.is_alive:
-                        continue
-                    dist = (plant.pos - self.pos).magnitude()
-                    if dist < best_dist and dist <= 15.0:  # Only nearby plants
-                        best_plant = plant
-                        best_dist = dist
-                
-                if best_plant is not None:
-                    # Eat from nearby plant
-                    bite = min(best_plant.energy, (best_plant.max_energy / best_plant.consumption_time) * dt)
-                    if bite > 0:
-                        best_plant.energy -= bite
-                        self.gain_energy(bite)
+                plants_nearby = world.get_plants_in_radius(self.pos, radius=15.0)
+                if plants_nearby:
+                    best_plant, best_dist = plants_nearby[0]  # Already sorted by distance
+                    if best_plant.is_alive:
+                        # Eat from nearby plant
+                        bite = min(best_plant.energy, (best_plant.max_energy / best_plant.consumption_time) * dt)
+                        if bite > 0:
+                            best_plant.energy -= bite
+                            self.gain_energy(bite)
                         if best_plant.energy <= 0:
                             best_plant.is_alive = False
                         return
@@ -477,7 +483,8 @@ class SmartCreature(Animal):
         herbivores = sensors['nearby_herbivores']
         
         # 1. Бегство
-        closest_pred = min(predators, key=lambda p: p['distance']) if predators else None
+        # OPTIMIZED: Sensor data уже отсортирован по расстоянию
+        closest_pred = predators[0] if predators else None
         if closest_pred and closest_pred['distance'] < 25 and self.energy > 10:
             direction = closest_pred.get('direction', Vector2(1,0))
             if isinstance(direction, Vector2):
@@ -489,7 +496,8 @@ class SmartCreature(Animal):
             
         # 2. Охота
         if herbivores:
-            target = min(herbivores, key=lambda h: h['distance'])
+            # OPTIMIZED: Берём первый элемент (уже отсортирован)
+            target = herbivores[0]
             if target['distance'] < self.attack_range:
                 victim = self._find_entity_by_id(world, target['id'])
                 if victim:
